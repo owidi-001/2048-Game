@@ -428,23 +428,21 @@ class _Header extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Flexible(
+        BrandMark(compact: compact),
+        const SizedBox(width: Space.md),
+        // The score panel takes the remaining width and shrinks its digits
+        // when very large scores would otherwise overflow.
+        Expanded(
           child: Align(
-            alignment: Alignment.centerLeft,
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: BrandMark(compact: compact),
+            alignment: Alignment.centerRight,
+            child: ScorePanel(
+              score: state.score,
+              best: provider.currentBest,
+              isBeatingRecord: provider.isBeatingRecord,
+              gainTick: provider.gainTick,
+              lastGain: provider.lastGain,
             ),
           ),
-        ),
-        const SizedBox(width: Space.md),
-        ScorePanel(
-          score: state.score,
-          best: provider.currentBest,
-          isBeatingRecord: provider.isBeatingRecord,
-          gainTick: provider.gainTick,
-          lastGain: provider.lastGain,
         ),
       ],
     );

@@ -142,7 +142,11 @@ class _ScorePanelState extends State<ScorePanel>
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [scoreStat, divider, bestStat],
+                  children: [
+                    Flexible(child: scoreStat),
+                    divider,
+                    Flexible(child: bestStat),
+                  ],
                 ),
               ),
       ),
@@ -186,10 +190,20 @@ class _Stat extends StatelessWidget {
           Stack(
             clipBehavior: Clip.none,
             children: [
-              TweenAnimationBuilder<int>(
-                tween: IntTween(begin: value, end: value),
-                duration: duration,
-                builder: (context, v, _) => Text('$v', style: valueStyle),
+              // Seven-digit scores shrink to fit instead of overflowing.
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: TweenAnimationBuilder<int>(
+                  tween: IntTween(begin: value, end: value),
+                  duration: duration,
+                  builder: (context, v, _) => Text(
+                    '$v',
+                    maxLines: 1,
+                    softWrap: false,
+                    style: valueStyle,
+                  ),
+                ),
               ),
               if (overlay != null)
                 Positioned(right: -4, top: -6, child: overlay!),

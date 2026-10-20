@@ -186,12 +186,15 @@ class ActionButton extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: GameTypography.caption(
-                          enabled ? g.textSecondary : fg,
+                      // Shrink rather than truncate at large text scales.
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          style: GameTypography.caption(
+                            enabled ? g.textSecondary : fg,
+                          ),
                         ),
                       ),
                     ],

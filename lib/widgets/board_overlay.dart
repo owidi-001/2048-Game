@@ -148,26 +148,29 @@ class _Panel extends StatelessWidget {
                         textAlign: TextAlign.center,
                         style: GameTypography.body(g.textSecondary),
                       ),
-                      SizedBox(height: compact ? Space.md : Space.lg),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          _Stat(
-                            label: 'SCORE',
-                            value: state.score,
-                            emphasize: true,
-                            compact: compact,
-                          ),
-                          const SizedBox(width: Space.sm),
-                          _Stat(
-                            label: 'BEST',
-                            value: best,
-                            emphasize: false,
-                            compact: compact,
-                          ),
-                        ],
-                      ),
-                      if (!isOver && record) ...[
+                      // Final numbers matter at game over; mid-game the header
+                      // already shows them, so the win panel stays light.
+                      if (isOver) ...[
+                        SizedBox(height: compact ? Space.md : Space.lg),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _Stat(
+                              label: 'SCORE',
+                              value: state.score,
+                              emphasize: true,
+                              compact: compact,
+                            ),
+                            const SizedBox(width: Space.sm),
+                            _Stat(
+                              label: 'BEST',
+                              value: best,
+                              emphasize: false,
+                              compact: compact,
+                            ),
+                          ],
+                        ),
+                      ] else if (record) ...[
                         const SizedBox(height: Space.md),
                         _RecordChip(),
                       ],
