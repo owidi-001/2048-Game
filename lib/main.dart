@@ -1,19 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+
 import 'providers/game_provider.dart';
 import 'screens/home_screen.dart';
 import 'services/storage_service.dart';
-import 'utils/app_colors.dart';
+import 'theme/game_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.dark,
-  ));
 
   final storage = StorageService();
   await storage.init();
@@ -21,31 +16,32 @@ void main() async {
   runApp(
     ChangeNotifierProvider(
       create: (_) => GameProvider(storage: storage)..init(),
-      child: const _App(),
+      child: const Ndoto2048App(),
     ),
   );
 }
 
-class _App extends StatelessWidget {
-  const _App();
+/// Root widget. Exposed so tests can pump the real app.
+class Ndoto2048App extends StatelessWidget {
+  const Ndoto2048App({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '2048',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFEDC22E),
-          brightness: Brightness.light,
-          surface: AppColors.background,
-        ),
-        scaffoldBackgroundColor: AppColors.background,
-        textTheme: GoogleFonts.nunitoTextTheme(),
-        splashFactory: InkRipple.splashFactory,
+    const game = GameTheme.midnight;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+        systemNavigationBarColor: game.background,
+        systemNavigationBarIconBrightness: Brightness.light,
       ),
-      home: const HomeScreen(),
+      child: MaterialApp(
+        title: '2048',
+        debugShowCheckedModeBanner: false,
+        theme: buildAppTheme(game),
+        home: const HomeScreen(),
+      ),
     );
   }
 }

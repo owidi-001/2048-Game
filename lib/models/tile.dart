@@ -37,18 +37,18 @@ class Tile {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'value': value,
-        'row': row,
-        'col': col,
-      };
+    'id': id,
+    'value': value,
+    'row': row,
+    'col': col,
+  };
 
   factory Tile.fromJson(Map<String, dynamic> json) => Tile(
-        id: json['id'] as int,
-        value: json['value'] as int,
-        row: json['row'] as int,
-        col: json['col'] as int,
-      );
+    id: json['id'] as int,
+    value: json['value'] as int,
+    row: json['row'] as int,
+    col: json['col'] as int,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -61,4 +61,9 @@ class Tile {
 
   @override
   int get hashCode => Object.hash(id, value, row, col);
+
+  @override
+  String toString() =>
+      'Tile#$id($value @$row,$col'
+      '${isNew ? ' new' : ''}${isMerged ? ' merged' : ''}${isAbsorbed ? ' absorbed' : ''})';
 }
