@@ -1,13 +1,22 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+
 import '../models/game_state.dart';
 import '../providers/game_provider.dart';
-import '../utils/app_colors.dart';
+import '../theme/game_theme.dart';
+import '../theme/tokens.dart';
+import '../widgets/app_buttons.dart';
+import '../widgets/app_dialogs.dart';
+import '../widgets/brand_mark.dart';
 import '../widgets/difficulty_selector_widget.dart';
 import '../widgets/game_board_widget.dart';
-import '../widgets/score_card_widget.dart';
+import '../widgets/how_to_play_sheet.dart';
+import '../widgets/score_panel.dart';
+import '../widgets/status_strip.dart';
 
+/// The single game screen. Composes the header, difficulty selector, board
+/// and action bar, and owns user-flow decisions (confirmations, sheets).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -16,353 +25,386 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _dialogActive = false;
+  GameProvider? _provider;
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<GameProvider>().addListener(_onProviderChange);
-    });
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final provider = context.read<GameProvider>();
+    if (!identical(provider, _provider)) {
+      _provider?.removeListener(_onProviderChange);
+      _provider = provider..addListener(_onProviderChange);
+    }
   }
 
   @override
   void dispose() {
-    context.read<GameProvider>().removeListener(_onProviderChange);
+    _provider?.removeListener(_onProviderChange);
     super.dispose();
   }
 
+  /// Side-effects only (haptics). All visual state is declarative.
   void _onProviderChange() {
-    if (!mounted || _dialogActive) return;
-    final provider = context.read<GameProvider>();
-    final event = provider.pendingEvent;
-    if (event == null) return;
-
-    provider.consumeEvent();
-
-    if (event == GameEvent.won) {
-      _dialogActive = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _showWinDialog(provider);
-      });
-    } else if (event == GameEvent.over) {
-      _dialogActive = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _showGameOverDialog(provider);
-      });
-    } else if (event == GameEvent.newBestScore) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.star_rounded, color: Colors.amber),
-              const SizedBox(width: 8),
-              Text(
-                'New best score! 🎉',
-                style: GoogleFonts.nunito(fontWeight: FontWeight.w700),
-              ),
-            ],
-          ),
-          backgroundColor: AppColors.buttonBackground,
-          duration: const Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-      );
+    final provider = _provider;
+    if (provider == null || !mounted) return;
+    for (final effect in provider.takeEffects()) {
+      switch (effect) {
+        case GameEffect.merge:
+          HapticFeedback.lightImpact();
+        case GameEffect.invalidMove:
+          HapticFeedback.selectionClick();
+        case GameEffect.won:
+          HapticFeedback.heavyImpact();
+        case GameEffect.over:
+          HapticFeedback.mediumImpact();
+        case GameEffect.undo:
+          HapticFeedback.selectionClick();
+      }
     }
   }
 
-  void _showWinDialog(GameProvider provider) {
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => _GameDialog(
-        icon: '🎉',
-        title: 'You Win!',
-        subtitle: 'You reached 2048!',
-        score: provider.state.score,
-        bestScore: provider.bestScore(provider.state.difficulty),
-        primaryLabel: 'Keep Going',
-        secondaryLabel: 'New Game',
-        onPrimary: () {
-          Navigator.pop(context);
-          _dialogActive = false;
-          provider.continueAfterWin();
-        },
-        onSecondary: () {
-          Navigator.pop(context);
-          _dialogActive = false;
-          provider.newGame();
-        },
-      ),
-    );
+  // ---------------------------------------------------------------------------
+  // User flows
+  // ---------------------------------------------------------------------------
+
+  Future<void> _newGame() async {
+    final provider = context.read<GameProvider>();
+    final state = provider.state;
+    // A fresh or finished board can be reset without asking.
+    if (state.hasProgress && !state.isOver) {
+      final ok = await showConfirmDialog(
+        context,
+        icon: Icons.refresh_rounded,
+        title: 'Start a new game?',
+        message:
+            'Your current ${state.difficulty.gridLabel} game and its score of '
+            '${state.score} will be lost.',
+        confirmLabel: 'New game',
+      );
+      if (!ok || !mounted) return;
+    }
+    await provider.newGame();
   }
 
-  void _showGameOverDialog(GameProvider provider) {
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => _GameDialog(
-        icon: '😔',
-        title: 'Game Over',
-        subtitle: 'No moves remaining',
-        score: provider.state.score,
-        bestScore: provider.bestScore(provider.state.difficulty),
-        primaryLabel: 'Play Again',
-        secondaryLabel: 'Change Difficulty',
-        onPrimary: () {
-          Navigator.pop(context);
-          _dialogActive = false;
-          provider.newGame();
-        },
-        onSecondary: () {
-          Navigator.pop(context);
-          _dialogActive = false;
-          _showDifficultyPicker(provider);
-        },
-      ),
-    );
+  Future<void> _changeDifficulty(Difficulty target) async {
+    final provider = context.read<GameProvider>();
+    final state = provider.state;
+    if (target == state.difficulty) return;
+    if (state.hasProgress && !state.isOver) {
+      final ok = await showConfirmDialog(
+        context,
+        icon: Icons.tune_rounded,
+        title: 'Switch to ${target.label}?',
+        message:
+            'Changing to the ${target.gridLabel} board starts a new game. '
+            'Your current score of ${state.score} will be lost.',
+        confirmLabel: 'Switch',
+      );
+      if (!ok || !mounted) return;
+    }
+    await provider.newGame(difficulty: target);
   }
 
-  void _showDifficultyPicker(GameProvider provider) {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _DifficultySheet(
-        current: provider.state.difficulty,
-        onSelected: (d) {
-          Navigator.pop(context);
-          provider.newGame(difficulty: d);
-        },
-      ),
+  Future<void> _pickDifficulty() async {
+    final provider = context.read<GameProvider>();
+    final chosen = await showDifficultySheet(
+      context,
+      current: provider.state.difficulty,
     );
+    if (chosen == null || !mounted) return;
+    if (chosen == provider.state.difficulty) {
+      await provider.newGame();
+    } else {
+      await _changeDifficulty(chosen);
+    }
   }
 
-  void _confirmNewGame(GameProvider provider) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: AppColors.background,
-        title: Text(
-          'Start New Game?',
-          style: GoogleFonts.nunito(
-            fontWeight: FontWeight.w900,
-            color: AppColors.titleColor,
-          ),
-        ),
-        content: Text(
-          'Your current progress will be lost.',
-          style: GoogleFonts.nunito(color: AppColors.textDark),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              'Cancel',
-              style: GoogleFonts.nunito(color: AppColors.textDark),
-            ),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.buttonBackground,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () {
-              Navigator.pop(context);
-              provider.newGame();
-            },
-            child: Text(
-              'New Game',
-              style: GoogleFonts.nunito(fontWeight: FontWeight.w700),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  void _keepGoing() => context.read<GameProvider>().continueAfterWin();
 
-  void _showHowToPlay() {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: AppColors.background,
-        title: Text(
-          'How to Play',
-          style: GoogleFonts.nunito(
-            fontWeight: FontWeight.w900,
-            color: AppColors.titleColor,
-            fontSize: 22,
-          ),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _HowToRow(icon: Icons.swipe, text: 'Swipe or use arrow keys to move tiles'),
-            const SizedBox(height: 12),
-            _HowToRow(icon: Icons.join_inner_rounded, text: 'Matching tiles merge and double in value'),
-            const SizedBox(height: 12),
-            _HowToRow(icon: Icons.emoji_events_rounded, text: 'Reach the 2048 tile to win!'),
-            const SizedBox(height: 12),
-            _HowToRow(icon: Icons.undo_rounded, text: 'Use Undo to reverse your last move'),
-            const SizedBox(height: 12),
-            _HowToRow(icon: Icons.tune_rounded, text: 'Choose difficulty for different board sizes'),
-          ],
-        ),
-        actions: [
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.buttonBackground,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              'Got it!',
-              style: GoogleFonts.nunito(fontWeight: FontWeight.w700),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  void _undo() => context.read<GameProvider>().undo();
+
+  void _howToPlay() => showHowToPlaySheet(context);
 
   @override
   Widget build(BuildContext context) {
+    final g = context.gameTheme;
     return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final isWide = constraints.maxWidth > 640;
-            return isWide ? _WideLayout(
-              onNewGame: _confirmNewGame,
-              onHowToPlay: _showHowToPlay,
-              onDifficulty: _showDifficultyPicker,
-            ) : _NarrowLayout(
-              onNewGame: _confirmNewGame,
-              onHowToPlay: _showHowToPlay,
-              onDifficulty: _showDifficultyPicker,
-            );
-          },
+      backgroundColor: g.background,
+      body: MediaQuery.withClampedTextScaling(
+        maxScaleFactor: Layout.maxTextScale,
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final wide =
+                  constraints.maxWidth >= Layout.wideBreakpoint &&
+                  constraints.maxWidth > constraints.maxHeight;
+              final board = GameBoardWidget(
+                onNewGame: _newGame,
+                onChangeDifficulty: _pickDifficulty,
+                onKeepGoing: _keepGoing,
+              );
+              return wide
+                  ? _WideLayout(
+                      board: board,
+                      onNewGame: _newGame,
+                      onUndo: _undo,
+                      onHowToPlay: _howToPlay,
+                      onDifficulty: _changeDifficulty,
+                    )
+                  : _PortraitLayout(
+                      board: board,
+                      onNewGame: _newGame,
+                      onUndo: _undo,
+                      onHowToPlay: _howToPlay,
+                      onDifficulty: _changeDifficulty,
+                    );
+            },
+          ),
         ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Layouts
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
-class _NarrowLayout extends StatelessWidget {
-  final void Function(GameProvider) onNewGame;
-  final VoidCallback onHowToPlay;
-  final void Function(GameProvider) onDifficulty;
-
-  const _NarrowLayout({
+class _PortraitLayout extends StatelessWidget {
+  const _PortraitLayout({
+    required this.board,
     required this.onNewGame,
+    required this.onUndo,
     required this.onHowToPlay,
     required this.onDifficulty,
   });
 
+  final Widget board;
+  final VoidCallback onNewGame;
+  final VoidCallback onUndo;
+  final VoidCallback onHowToPlay;
+  final ValueChanged<Difficulty> onDifficulty;
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<GameProvider>();
+    final state = provider.state;
+    final compactHeight = MediaQuery.sizeOf(context).height < 700;
+    final hPad = compactHeight ? Space.md : Space.lg;
 
-    return Column(
-      children: [
-        _Header(provider: provider, onNewGame: () => onNewGame(provider)),
-        const SizedBox(height: 10),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: DifficultySelectorWidget(
-            current: provider.state.difficulty,
-            onChanged: (d) {
-              if (d == provider.state.difficulty) return;
-              _confirmDifficulty(context, provider, d);
-            },
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: Layout.maxContentWidth),
+        child: Column(
+          children: [
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                hPad,
+                compactHeight ? Space.sm : Space.md,
+                hPad,
+                0,
+              ),
+              child: _Header(provider: provider, compact: compactHeight),
+            ),
+            SizedBox(height: compactHeight ? Space.md : Space.lg),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: hPad),
+              child: DifficultySelectorWidget(
+                current: state.difficulty,
+                onChanged: onDifficulty,
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: hPad,
+                  vertical: compactHeight ? Space.md : Space.lg,
+                ),
+                child: _BoardArea(board: board, state: state),
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                hPad,
+                0,
+                hPad,
+                compactHeight ? Space.sm : Space.md,
+              ),
+              child: _ActionBar(
+                provider: provider,
+                onNewGame: onNewGame,
+                onUndo: onUndo,
+                onHowToPlay: onHowToPlay,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Board plus the status strip, sized together so the strip sits directly
+/// under the board and never steals space from it on short screens.
+class _BoardArea extends StatelessWidget {
+  const _BoardArea({required this.board, required this.state});
+
+  final Widget board;
+  final GameState state;
+
+  static const _stripHeight = 22.0;
+  static const _stripGap = Space.md;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final h = constraints.maxHeight;
+        // Show the strip only when there is room under a full-width board.
+        final showStrip = h - w >= _stripHeight + _stripGap + Space.sm;
+        final boardSide = [
+          w,
+          showStrip ? h - _stripHeight - _stripGap : h,
+          Layout.maxBoardSize,
+        ].reduce((a, b) => a < b ? a : b);
+
+        return Align(
+          // Slightly above centre: whitespace reads better under the board
+          // than between the selector and the board.
+          alignment: const Alignment(0, -0.4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(width: boardSide, height: boardSide, child: board),
+              if (showStrip) ...[
+                const SizedBox(height: _stripGap),
+                SizedBox(
+                  height: _stripHeight,
+                  child: StatusStrip(state: state),
+                ),
+              ],
+            ],
           ),
-        ),
-        const SizedBox(height: 12),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: const GameBoardWidget(),
-          ),
-        ),
-        const SizedBox(height: 8),
-        _BottomControls(
-          onRestart: () => onNewGame(provider),
-          onUndo: provider.canUndo ? provider.undo : null,
-          onHelp: onHowToPlay,
-        ),
-        const SizedBox(height: 8),
-      ],
+        );
+      },
     );
   }
 }
 
 class _WideLayout extends StatelessWidget {
-  final void Function(GameProvider) onNewGame;
-  final VoidCallback onHowToPlay;
-  final void Function(GameProvider) onDifficulty;
-
   const _WideLayout({
+    required this.board,
     required this.onNewGame,
+    required this.onUndo,
     required this.onHowToPlay,
     required this.onDifficulty,
   });
 
+  final Widget board;
+  final VoidCallback onNewGame;
+  final VoidCallback onUndo;
+  final VoidCallback onHowToPlay;
+  final ValueChanged<Difficulty> onDifficulty;
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<GameProvider>();
+    final g = context.gameTheme;
+    final state = provider.state;
+    // Phone-landscape heights get a denser sidebar; tablets get the full list.
+    final short = MediaQuery.sizeOf(context).height < 560;
+    final pad = short ? Space.lg : Space.xxl;
+
+    final sidebar = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (short)
+          Row(
+            children: [
+              const BrandMark(compact: true),
+              const Spacer(),
+              ScorePanel(
+                score: state.score,
+                best: provider.currentBest,
+                isBeatingRecord: provider.isBeatingRecord,
+                gainTick: provider.gainTick,
+                lastGain: provider.lastGain,
+              ),
+            ],
+          )
+        else ...[
+          const Align(alignment: Alignment.centerLeft, child: BrandMark()),
+          const SizedBox(height: Space.xxl),
+          ScorePanel(
+            score: state.score,
+            best: provider.currentBest,
+            isBeatingRecord: provider.isBeatingRecord,
+            gainTick: provider.gainTick,
+            lastGain: provider.lastGain,
+            vertical: true,
+          ),
+        ],
+        SizedBox(height: short ? Space.lg : Space.xxl),
+        if (!short) ...[
+          Text('DIFFICULTY', style: GameTypography.label(g.textMuted)),
+          const SizedBox(height: Space.sm),
+        ],
+        DifficultySelectorWidget(
+          current: state.difficulty,
+          onChanged: onDifficulty,
+          vertical: !short,
+        ),
+        SizedBox(height: short ? Space.lg : Space.md),
+        if (short)
+          _ActionBar(
+            provider: provider,
+            onNewGame: onNewGame,
+            onUndo: onUndo,
+            onHowToPlay: onHowToPlay,
+          )
+        else ...[
+          ActionButton(
+            icon: Icons.refresh_rounded,
+            label: 'New game',
+            emphasis: true,
+            horizontal: true,
+            onPressed: onNewGame,
+          ),
+          const SizedBox(height: Space.sm),
+          ActionButton(
+            icon: Icons.undo_rounded,
+            label: 'Undo',
+            horizontal: true,
+            badge: provider.undoDepth,
+            onPressed: provider.canUndo ? onUndo : null,
+          ),
+          const SizedBox(height: Space.sm),
+          ActionButton(
+            icon: Icons.help_outline_rounded,
+            label: 'How to play',
+            horizontal: true,
+            onPressed: onHowToPlay,
+          ),
+          const SizedBox(height: Space.lg),
+          StatusStrip(state: state),
+        ],
+      ],
+    );
 
     return Row(
       children: [
         SizedBox(
-          width: 280,
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _TitleText(),
-                const SizedBox(height: 20),
-                _ScoreRow(provider: provider),
-                const SizedBox(height: 24),
-                Text(
-                  'DIFFICULTY',
-                  style: GoogleFonts.nunito(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark.withAlpha(160),
-                    letterSpacing: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                _VerticalDifficultySelector(
-                  current: provider.state.difficulty,
-                  onChanged: (d) {
-                    if (d == provider.state.difficulty) return;
-                    _confirmDifficulty(context, provider, d);
-                  },
-                ),
-                const Spacer(),
-                _VerticalControls(
-                  onRestart: () => onNewGame(provider),
-                  onUndo: provider.canUndo ? provider.undo : null,
-                  onHelp: onHowToPlay,
-                ),
-              ],
-            ),
+          width: short ? 340 : 320,
+          child: SingleChildScrollView(
+            padding: EdgeInsets.all(pad),
+            child: sidebar,
           ),
         ),
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: const GameBoardWidget(),
+            padding: EdgeInsets.fromLTRB(0, pad, pad, pad),
+            child: board,
           ),
         ),
       ],
@@ -370,587 +412,88 @@ class _WideLayout extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shared sub-widgets
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Pieces
+// -----------------------------------------------------------------------------
 
 class _Header extends StatelessWidget {
+  const _Header({required this.provider, required this.compact});
+
+  final GameProvider provider;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = provider.state;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Flexible(
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: BrandMark(compact: compact),
+            ),
+          ),
+        ),
+        const SizedBox(width: Space.md),
+        ScorePanel(
+          score: state.score,
+          best: provider.currentBest,
+          isBeatingRecord: provider.isBeatingRecord,
+          gainTick: provider.gainTick,
+          lastGain: provider.lastGain,
+        ),
+      ],
+    );
+  }
+}
+
+class _ActionBar extends StatelessWidget {
+  const _ActionBar({
+    required this.provider,
+    required this.onNewGame,
+    required this.onUndo,
+    required this.onHowToPlay,
+  });
+
   final GameProvider provider;
   final VoidCallback onNewGame;
-
-  const _Header({required this.provider, required this.onNewGame});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          _TitleText(),
-          const Spacer(),
-          _ScoreRow(provider: provider),
-        ],
-      ),
-    );
-  }
-}
-
-class _TitleText extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      '2048',
-      style: GoogleFonts.nunito(
-        fontSize: 42,
-        fontWeight: FontWeight.w900,
-        color: AppColors.titleColor,
-        height: 1.0,
-      ),
-    );
-  }
-}
-
-class _ScoreRow extends StatelessWidget {
-  final GameProvider provider;
-
-  const _ScoreRow({required this.provider});
+  final VoidCallback onUndo;
+  final VoidCallback onHowToPlay;
 
   @override
   Widget build(BuildContext context) {
-    final isNewBest = provider.isNewBestScore;
     return Row(
       children: [
-        ScoreCardWidget(label: 'SCORE', score: provider.state.score),
-        const SizedBox(width: 8),
-        ScoreCardWidget(
-          label: 'BEST',
-          score: provider.bestScore(provider.state.difficulty),
-          highlight: isNewBest,
-        ),
-      ],
-    );
-  }
-}
-
-class _BottomControls extends StatelessWidget {
-  final VoidCallback onRestart;
-  final VoidCallback? onUndo;
-  final VoidCallback onHelp;
-
-  const _BottomControls({
-    required this.onRestart,
-    required this.onUndo,
-    required this.onHelp,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _ControlBtn(
+        Expanded(
+          child: ActionButton(
             icon: Icons.refresh_rounded,
-            label: 'New Game',
-            onTap: onRestart,
+            label: 'New game',
+            emphasis: true,
+            onPressed: onNewGame,
           ),
-          _ControlBtn(
+        ),
+        const SizedBox(width: Space.sm),
+        Expanded(
+          child: ActionButton(
             icon: Icons.undo_rounded,
             label: 'Undo',
-            onTap: onUndo,
+            badge: provider.undoDepth,
+            onPressed: provider.canUndo ? onUndo : null,
           ),
-          _ControlBtn(
-            icon: Icons.help_outline_rounded,
-            label: 'How to Play',
-            onTap: onHelp,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _VerticalControls extends StatelessWidget {
-  final VoidCallback onRestart;
-  final VoidCallback? onUndo;
-  final VoidCallback onHelp;
-
-  const _VerticalControls({
-    required this.onRestart,
-    required this.onUndo,
-    required this.onHelp,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        _WideBtn(icon: Icons.refresh_rounded, label: 'New Game', onTap: onRestart),
-        const SizedBox(height: 8),
-        _WideBtn(icon: Icons.undo_rounded, label: 'Undo', onTap: onUndo),
-        const SizedBox(height: 8),
-        _WideBtn(icon: Icons.help_outline_rounded, label: 'How to Play', onTap: onHelp),
-      ],
-    );
-  }
-}
-
-class _ControlBtn extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback? onTap;
-
-  const _ControlBtn({required this.icon, required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = onTap != null;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 24,
-              color: enabled ? AppColors.buttonBackground : AppColors.textDark.withAlpha(80),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: GoogleFonts.nunito(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: enabled ? AppColors.textDark : AppColors.textDark.withAlpha(80),
-              ),
-            ),
-          ],
         ),
-      ),
-    );
-  }
-}
-
-class _WideBtn extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback? onTap;
-
-  const _WideBtn({required this.icon, required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = onTap != null;
-    return SizedBox(
-      width: double.infinity,
-      child: OutlinedButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 18),
-        label: Text(label, style: GoogleFonts.nunito(fontWeight: FontWeight.w700)),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: enabled ? AppColors.buttonBackground : AppColors.textDark.withAlpha(80),
-          side: BorderSide(
-            color: enabled
-                ? AppColors.buttonBackground.withAlpha(160)
-                : AppColors.textDark.withAlpha(60),
-          ),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          padding: const EdgeInsets.symmetric(vertical: 12),
-        ),
-      ),
-    );
-  }
-}
-
-class _VerticalDifficultySelector extends StatelessWidget {
-  final Difficulty current;
-  final ValueChanged<Difficulty> onChanged;
-
-  const _VerticalDifficultySelector({
-    required this.current,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: Difficulty.values.map((d) {
-        final isSelected = d == current;
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            decoration: BoxDecoration(
-              color: isSelected ? AppColors.buttonBackground : AppColors.emptyCell,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: InkWell(
-              onTap: () => onChanged(d),
-              borderRadius: BorderRadius.circular(10),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                child: Row(
-                  children: [
-                    Text(
-                      d.label,
-                      style: GoogleFonts.nunito(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: isSelected ? Colors.white : AppColors.textDark,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      d.gridLabel,
-                      style: GoogleFonts.nunito(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: isSelected
-                            ? Colors.white.withAlpha(200)
-                            : AppColors.textDark.withAlpha(160),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-}
-
-class _HowToRow extends StatelessWidget {
-  final IconData icon;
-  final String text;
-
-  const _HowToRow({required this.icon, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 22, color: AppColors.buttonBackground),
-        const SizedBox(width: 12),
+        const SizedBox(width: Space.sm),
         Expanded(
-          child: Text(
-            text,
-            style: GoogleFonts.nunito(
-              fontSize: 14,
-              color: AppColors.textDark,
-              fontWeight: FontWeight.w600,
-            ),
+          child: ActionButton(
+            icon: Icons.help_outline_rounded,
+            label: 'How to play',
+            onPressed: onHowToPlay,
           ),
         ),
       ],
     );
   }
-}
-
-// ---------------------------------------------------------------------------
-// Game dialogs
-// ---------------------------------------------------------------------------
-
-class _GameDialog extends StatefulWidget {
-  final String icon;
-  final String title;
-  final String subtitle;
-  final int score;
-  final int bestScore;
-  final String primaryLabel;
-  final String secondaryLabel;
-  final VoidCallback onPrimary;
-  final VoidCallback onSecondary;
-
-  const _GameDialog({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.score,
-    required this.bestScore,
-    required this.primaryLabel,
-    required this.secondaryLabel,
-    required this.onPrimary,
-    required this.onSecondary,
-  });
-
-  @override
-  State<_GameDialog> createState() => _GameDialogState();
-}
-
-class _GameDialogState extends State<_GameDialog>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late final Animation<double> _scaleAnim;
-  late final Animation<double> _fadeAnim;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 350),
-    );
-    _scaleAnim = CurvedAnimation(parent: _controller, curve: Curves.elasticOut);
-    _fadeAnim = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
-    _controller.forward();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: _fadeAnim,
-      child: ScaleTransition(
-        scale: _scaleAnim,
-        child: AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          backgroundColor: AppColors.background,
-          contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(widget.icon, style: const TextStyle(fontSize: 56)),
-              const SizedBox(height: 12),
-              Text(
-                widget.title,
-                style: GoogleFonts.nunito(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  color: AppColors.titleColor,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                widget.subtitle,
-                style: GoogleFonts.nunito(
-                  fontSize: 15,
-                  color: AppColors.textDark.withAlpha(180),
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _ScoreInfo(label: 'Score', value: widget.score),
-                  const SizedBox(width: 20),
-                  _ScoreInfo(label: 'Best', value: widget.bestScore),
-                ],
-              ),
-              const SizedBox(height: 24),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.buttonBackground,
-                  minimumSize: const Size(double.infinity, 48),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: widget.onPrimary,
-                child: Text(
-                  widget.primaryLabel,
-                  style: GoogleFonts.nunito(
-                      fontWeight: FontWeight.w800, fontSize: 16),
-                ),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.textDark,
-                  side: BorderSide(color: AppColors.textDark.withAlpha(100)),
-                  minimumSize: const Size(double.infinity, 44),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: widget.onSecondary,
-                child: Text(
-                  widget.secondaryLabel,
-                  style: GoogleFonts.nunito(
-                      fontWeight: FontWeight.w700, fontSize: 15),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ScoreInfo extends StatelessWidget {
-  final String label;
-  final int value;
-
-  const _ScoreInfo({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.scoreCard,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        children: [
-          Text(
-            label.toUpperCase(),
-            style: GoogleFonts.nunito(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: AppColors.scoreLabel,
-              letterSpacing: 1.2,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            value.toString(),
-            style: GoogleFonts.nunito(
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
-              color: Colors.white,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DifficultySheet extends StatelessWidget {
-  final Difficulty current;
-  final ValueChanged<Difficulty> onSelected;
-
-  const _DifficultySheet({required this.current, required this.onSelected});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.all(12),
-      padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            'Choose Difficulty',
-            style: GoogleFonts.nunito(
-              fontSize: 20,
-              fontWeight: FontWeight.w900,
-              color: AppColors.titleColor,
-            ),
-          ),
-          const SizedBox(height: 16),
-          ...Difficulty.values.map((d) {
-            final isSelected = d == current;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: InkWell(
-                onTap: () => onSelected(d),
-                borderRadius: BorderRadius.circular(14),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? AppColors.buttonBackground
-                        : AppColors.emptyCell,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                  child: Row(
-                    children: [
-                      Text(
-                        d.label,
-                        style: GoogleFonts.nunito(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: isSelected ? Colors.white : AppColors.textDark,
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        d.gridLabel,
-                        style: GoogleFonts.nunito(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: isSelected
-                              ? Colors.white.withAlpha(200)
-                              : AppColors.textDark.withAlpha(160),
-                        ),
-                      ),
-                      if (isSelected) ...[
-                        const SizedBox(width: 8),
-                        const Icon(Icons.check_circle_rounded,
-                            color: Colors.white, size: 20),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-            );
-          }),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: confirm difficulty change
-// ---------------------------------------------------------------------------
-
-void _confirmDifficulty(
-    BuildContext context, GameProvider provider, Difficulty newDifficulty) {
-  showDialog<void>(
-    context: context,
-    builder: (_) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      backgroundColor: AppColors.background,
-      title: Text(
-        'Change Difficulty?',
-        style: GoogleFonts.nunito(
-            fontWeight: FontWeight.w900, color: AppColors.titleColor),
-      ),
-      content: Text(
-        'Switching to ${newDifficulty.label} (${newDifficulty.gridLabel}) will start a new game.',
-        style: GoogleFonts.nunito(color: AppColors.textDark),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text('Cancel',
-              style: GoogleFonts.nunito(color: AppColors.textDark)),
-        ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: AppColors.buttonBackground,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-          onPressed: () {
-            Navigator.pop(context);
-            provider.newGame(difficulty: newDifficulty);
-          },
-          child: Text(
-            'Switch',
-            style: GoogleFonts.nunito(fontWeight: FontWeight.w700),
-          ),
-        ),
-      ],
-    ),
-  );
 }

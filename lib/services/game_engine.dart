@@ -19,36 +19,52 @@ class MoveResult {
 class GameEngine {
   GameEngine._();
 
-  static GameState newGame(Difficulty difficulty, int Function() nextId) {
+  /// Random source. Injectable so tests can build deterministic boards.
+  static Random random = Random();
+
+  static GameState newGame(
+    Difficulty difficulty,
+    int Function() nextId, {
+    int bestAtStart = 0,
+  }) {
     final size = difficulty.gridSize;
     final tiles = <Tile>[];
     final allPositions = [
       for (int r = 0; r < size; r++)
         for (int c = 0; c < size; c++) (row: r, col: c),
-    ]..shuffle(Random());
+    ]..shuffle(random);
 
-    tiles.add(Tile(
-      id: nextId(),
-      value: _randomValue(),
-      row: allPositions[0].row,
-      col: allPositions[0].col,
-      isNew: true,
-    ));
-    tiles.add(Tile(
-      id: nextId(),
-      value: _randomValue(),
-      row: allPositions[1].row,
-      col: allPositions[1].col,
-      isNew: true,
-    ));
+    tiles.add(
+      Tile(
+        id: nextId(),
+        value: _randomValue(),
+        row: allPositions[0].row,
+        col: allPositions[0].col,
+        isNew: true,
+      ),
+    );
+    tiles.add(
+      Tile(
+        id: nextId(),
+        value: _randomValue(),
+        row: allPositions[1].row,
+        col: allPositions[1].col,
+        isNew: true,
+      ),
+    );
 
     return GameState(
       tiles: tiles,
       score: 0,
       status: GameStatus.playing,
       difficulty: difficulty,
+      bestAtStart: bestAtStart,
     );
   }
+
+  /// Whether any move is still possible on [state]'s board.
+  static bool canMove(GameState state) =>
+      _canMove(state.activeTiles, state.difficulty.gridSize);
 
   static MoveResult move({
     required GameState state,
@@ -109,18 +125,21 @@ class GameEngine {
       }
     }
     if (empty.isNotEmpty) {
-      final pos = empty[Random().nextInt(empty.length)];
-      allActive.add(Tile(
-        id: nextId(),
-        value: _randomValue(),
-        row: pos.$1,
-        col: pos.$2,
-        isNew: true,
-      ));
+      final pos = empty[random.nextInt(empty.length)];
+      allActive.add(
+        Tile(
+          id: nextId(),
+          value: _randomValue(),
+          row: pos.$1,
+          col: pos.$2,
+          isNew: true,
+        ),
+      );
     }
 
     final newScore = state.score + totalScore;
-    final justWon = !state.hasWonAlready && allActive.any((t) => t.value >= 2048);
+    final justWon =
+        !state.hasWonAlready && allActive.any((t) => t.value >= 2048);
     final isOver = !_canMove(allActive, size);
 
     final GameStatus newStatus;
@@ -128,7 +147,8 @@ class GameEngine {
       newStatus = GameStatus.won;
     } else if (isOver) {
       newStatus = GameStatus.over;
-    } else if (state.hasWonAlready || state.status == GameStatus.continueAfterWin) {
+    } else if (state.hasWonAlready ||
+        state.status == GameStatus.continueAfterWin) {
       newStatus = GameStatus.continueAfterWin;
     } else {
       newStatus = GameStatus.playing;
@@ -141,6 +161,8 @@ class GameEngine {
         status: newStatus,
         difficulty: state.difficulty,
         hasWonAlready: state.hasWonAlready || justWon,
+        bestAtStart: state.bestAtStart,
+        moves: state.moves + 1,
       ),
       moved: true,
       scoreGain: totalScore,
@@ -156,9 +178,17 @@ class GameEngine {
     required int size,
     required bool forward, // true = compact toward 0, false = toward size-1
     required bool useCol, // true = we're processing a row (varying col)
-    required int fixedIndex, // the row (for useCol=true) or col (for useCol=false)
+    required int
+    fixedIndex, // the row (for useCol=true) or col (for useCol=false)
   }) {
-    if (tiles.isEmpty) return const _LineResult(active: [], absorbed: [], score: 0, moved: false);
+    if (tiles.isEmpty) {
+      return const _LineResult(
+        active: [],
+        absorbed: [],
+        score: 0,
+        moved: false,
+      );
+    }
 
     // Sort in movement direction
     final sorted = List<Tile>.from(tiles);
@@ -185,21 +215,25 @@ class GameEngine {
         score += mergedValue;
         moved = true;
 
-        active.add(Tile(
-          id: sorted[i].id,
-          value: mergedValue,
-          row: useCol ? fixedIndex : dest,
-          col: useCol ? dest : fixedIndex,
-          isMerged: true,
-        ));
+        active.add(
+          Tile(
+            id: sorted[i].id,
+            value: mergedValue,
+            row: useCol ? fixedIndex : dest,
+            col: useCol ? dest : fixedIndex,
+            isMerged: true,
+          ),
+        );
 
-        absorbed.add(Tile(
-          id: sorted[i + 1].id,
-          value: sorted[i + 1].value,
-          row: useCol ? fixedIndex : dest,
-          col: useCol ? dest : fixedIndex,
-          isAbsorbed: true,
-        ));
+        absorbed.add(
+          Tile(
+            id: sorted[i + 1].id,
+            value: sorted[i + 1].value,
+            row: useCol ? fixedIndex : dest,
+            col: useCol ? dest : fixedIndex,
+            isAbsorbed: true,
+          ),
+        );
 
         outIdx++;
         i += 2;
@@ -207,19 +241,26 @@ class GameEngine {
         // Move or stay
         if (dest != curPos) moved = true;
 
-        active.add(Tile(
-          id: sorted[i].id,
-          value: sorted[i].value,
-          row: useCol ? fixedIndex : dest,
-          col: useCol ? dest : fixedIndex,
-        ));
+        active.add(
+          Tile(
+            id: sorted[i].id,
+            value: sorted[i].value,
+            row: useCol ? fixedIndex : dest,
+            col: useCol ? dest : fixedIndex,
+          ),
+        );
 
         outIdx++;
         i++;
       }
     }
 
-    return _LineResult(active: active, absorbed: absorbed, score: score, moved: moved);
+    return _LineResult(
+      active: active,
+      absorbed: absorbed,
+      score: score,
+      moved: moved,
+    );
   }
 
   static bool _canMove(List<Tile> tiles, int size) {
@@ -239,7 +280,7 @@ class GameEngine {
     return false;
   }
 
-  static int _randomValue() => Random().nextDouble() < 0.9 ? 2 : 4;
+  static int _randomValue() => random.nextDouble() < 0.9 ? 2 : 4;
 }
 
 class _LineResult {
